@@ -27,7 +27,7 @@
   function fijar(c) { if (!E[c]) return false; actual = c; etiqueta.textContent = E[c].n; return true; }
 
   // ---------- Diagnóstico (medidas) ----------
-  var M = { txt: [], aud: [], ttsMs: [], ttsOk: 0, ttsFail: 0, t0: 0, gotTxt: false, gotAud: false, live: { estado: "apagado", setupMs: 0, audioMs: [], cierres: 0, ultimo: "", modo: 0 } }, DL = [];
+  var M = { txt: [], aud: [], ttsMs: [], ttsOk: 0, ttsFail: 0, t0: 0, gotTxt: false, gotAud: false, live: { estado: "apagado", mic: "", setupMs: 0, audioMs: [], cierres: 0, ultimo: "", modo: 0 } }, DL = [];
   function dlog(s) { DL.push(new Date().toLocaleTimeString("es-CO") + " " + String(s).slice(0, 240)); if (DL.length > 14) DL.shift(); }
   window.addEventListener("error", function (e) { dlog("Error JS: " + (e.message || "") + (e.lineno ? " (línea " + e.lineno + ")" : "")); });
   window.addEventListener("unhandledrejection", function (e) { dlog("Promesa rechazada: " + ((e.reason && e.reason.message) || e.reason)); });
@@ -1512,7 +1512,7 @@
       "Hasta que empieza la voz (modo normal): " + est(M.aud),
       "Voz de Gemini (TTS): ok " + M.ttsOk + " · fallos " + M.ttsFail + " · tiempo " + est(M.ttsMs) + (Date.now() - ttsMalo < 300000 ? " · USANDO VOZ DEL NAVEGADOR por fallo reciente" : ""),
       "Voz elegida: " + selVoz.value + " · motor de micrófono: " + motorMic,
-      "Modo en vivo: " + (liveOn ? "activado" : "apagado") + " · estado: " + M.live.estado + " · conexión: " + (M.live.setupMs ? M.live.setupMs + " ms" : "—") + " · 1er audio tras tu última palabra: " + est(M.live.audioMs) + " · cierres: " + M.live.cierres + (M.live.ultimo ? " · último cierre: " + M.live.ultimo : ""),
+      "Modo en vivo: " + (liveOn ? "activado" : "apagado") + " · estado: " + M.live.estado + " · micrófono: " + (M.live.mic || "—") + " · conexión: " + (M.live.setupMs ? M.live.setupMs + " ms" : "—") + " · 1er audio tras tu última palabra: " + est(M.live.audioMs) + " · cierres: " + M.live.cierres + (M.live.ultimo ? " · último cierre: " + M.live.ultimo : ""),
       "Puente de la TV: " + (rokuVivo ? "ha respondido antes" : "nunca ha respondido") + " · " + ROKU_URL + " · último: " + (M.rokuUlt || "—"),
       "— Últimos avisos —"
     ].concat(DL.length ? DL : ["(ninguno)"]).concat(["", "Navegador: " + navigator.userAgent]);
@@ -1577,15 +1577,47 @@
     liveStop("El modo en vivo no pudo conectar (" + (String(motivo).trim() || "sin detalle") + "). Lo apagué y sigo con el modo normal; el motivo queda en Diagnóstico.", true);
   }
   function b64Int16(pcm) { var u = new Uint8Array(pcm.buffer), s = ""; for (var i = 0; i < u.length; i += 0x2000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x2000)); return btoa(s); }
+  // Captura del modo en vivo: AudioWorklet (hilo de audio, sin tirones) con respaldo a ScriptProcessor.
+  var WK_SRC = "class P extends AudioWorkletProcessor{constructor(o){super();this.r=o.processorOptions.ratio;this.pos=0;this.acc=0;this.cnt=0;this.hp=0;this.pv=0;this.b=new Int16Array(800);this.i=0;this.e=0}" +
+    "process(inp){var x=inp[0]&&inp[0][0];if(!x)return true;for(var k=0;k<x.length;k++){this.acc+=x[k];this.cnt++;this.pos+=1;if(this.pos>=this.r){var v=this.acc/this.cnt;this.acc=0;this.cnt=0;this.pos-=this.r;var y=v-this.pv+.96*this.hp;this.pv=v;this.hp=y;if(y>1)y=1;else if(y<-1)y=-1;this.e+=y*y;this.b[this.i++]=y*32767;" +
+    "if(this.i===800){var o=this.b;this.port.postMessage({pcm:o.buffer,rms:Math.sqrt(this.e/800)},[o.buffer]);this.b=new Int16Array(800);this.i=0;this.e=0}}}return true}}registerProcessor('nexo-pcm',P)";
+  function liveEnviar(L, pcm, rms) {
+    if (live !== L || !L.ok || !L.ws || L.ws.readyState !== 1) return;
+    var ahora = performance.now(), gate = !liveInt && (hablando || ahora < L.gateHasta);
+    if (gate) {
+      // corte de voz inteligente: si hablas fuerte y sostenido mientras NEXO habla, lo interrumpo (el eco ya viene filtrado por el navegador)
+      if (hablando && ls("nexo_barge") !== "0" && rms > .11) { L.fuerte = (L.fuerte || 0) + 1; if (L.fuerte >= 5) { L.fuerte = 0; dlog("Live: corte de voz (rms " + rms.toFixed(2) + ")"); liveCortar(L); L.gateHasta = 0; } } else L.fuerte = 0;
+      return;
+    }
+    L.fuerte = 0; if (rms > .02) pulso = Math.max(pulso, Math.min(1.1, rms * 7));
+    try { L.ws.send(JSON.stringify({ realtimeInput: { audio: { data: b64Int16(pcm), mimeType: "audio/pcm;rate=16000" } } })); } catch (er) {}
+  }
   function liveMic(L) {
-    if (L.pr) return; var a = ac, ratio = a.sampleRate / 16000;
+    if (L.pr || L.wk) return; var a = ac;
+    if (a.audioWorklet && window.AudioWorkletNode && window.Blob && window.URL && URL.createObjectURL) {
+      L.wk = true; var url;
+      try { url = URL.createObjectURL(new Blob([WK_SRC], { type: "application/javascript" })); } catch (er) { L.wk = false; return liveMicSP(L); }
+      a.audioWorklet.addModule(url).then(function () {
+        try { URL.revokeObjectURL(url); } catch (er) {}
+        if (live !== L) return;
+        var nodo = new AudioWorkletNode(a, "nexo-pcm", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], processorOptions: { ratio: a.sampleRate / 16000 } });
+        nodo.port.onmessage = function (ev) { liveEnviar(L, new Int16Array(ev.data.pcm), ev.data.rms); };
+        L.src = a.createMediaStreamSource(L.st); L.pr = nodo; L.mute = a.createGain(); L.mute.gain.value = 0; M.live.mic = "worklet";
+        L.src.connect(anM); L.src.connect(nodo); nodo.connect(L.mute); L.mute.connect(a.destination);
+      }).catch(function (er) { L.wk = false; dlog("Live: worklet no disponible (" + (er && er.message) + "), uso el método clásico"); if (live === L) liveMicSP(L); });
+      return;
+    }
+    liveMicSP(L);
+  }
+  function liveMicSP(L) {
+    if (L.pr) return; var a = ac, ratio = a.sampleRate / 16000; M.live.mic = "script";
     L.src = a.createMediaStreamSource(L.st); L.pr = a.createScriptProcessor(2048, 1, 1); L.mute = a.createGain(); L.mute.gain.value = 0;
+    var hp = 0, pv = 0;
     L.pr.onaudioprocess = function (e) {
       if (live !== L || !L.ok || !L.ws || L.ws.readyState !== 1) return;
-      var inp = e.inputBuffer.getChannelData(0), n = Math.floor(inp.length / ratio), pcm = new Int16Array(n), gate = !liveInt && (hablando || performance.now() < L.gateHasta), i, j, s, rms = 0;
-      if (!gate) for (i = 0; i < n; i++) { var a0 = Math.floor(i * ratio), b0 = Math.min(inp.length, Math.floor((i + 1) * ratio)); s = 0; for (j = a0; j < b0; j++) s += inp[j]; s /= Math.max(1, b0 - a0); rms += s * s; pcm[i] = lim(s, -1, 1) * 32767; }
-      if (!gate) { rms = Math.sqrt(rms / n); if (rms > .02) pulso = Math.max(pulso, Math.min(1.1, rms * 7)); }
-      try { L.ws.send(JSON.stringify({ realtimeInput: { audio: { data: b64Int16(pcm), mimeType: "audio/pcm;rate=16000" } } })); } catch (er) {}
+      var inp = e.inputBuffer.getChannelData(0), n = Math.floor(inp.length / ratio), pcm = new Int16Array(n), i, j, s, y, rms = 0;
+      for (i = 0; i < n; i++) { var a0 = Math.floor(i * ratio), b0 = Math.min(inp.length, Math.floor((i + 1) * ratio)); s = 0; for (j = a0; j < b0; j++) s += inp[j]; s /= Math.max(1, b0 - a0); y = s - pv + .96 * hp; pv = s; hp = y; y = lim(y, -1, 1); rms += y * y; pcm[i] = y * 32767; }
+      liveEnviar(L, pcm, Math.sqrt(rms / Math.max(1, n)));
     };
     L.src.connect(anM); L.src.connect(L.pr); L.pr.connect(L.mute); L.mute.connect(a.destination);
   }
@@ -1635,7 +1667,7 @@
   function liveStop(texto, err) {
     var L = live; if (!L) return; live = null; clearTimeout(L.tmo); L.cerrado = true; M.live.estado = "apagado";
     try { L.ws.onclose = null; L.ws.onmessage = null; L.ws.close(); } catch (er) {}
-    liveCortar(L); try { L.pr.onaudioprocess = null; L.pr.disconnect(); L.src.disconnect(); L.mute.disconnect(); } catch (er2) {}
+    liveCortar(L); try { if (L.pr) { L.pr.onaudioprocess = null; if (L.pr.port) L.pr.port.onmessage = null; L.pr.disconnect(); } } catch (er2) {} try { if (L.src) L.src.disconnect(); if (L.mute) L.mute.disconnect(); } catch (er3) {}
     if (L.st) L.st.getTracks().forEach(function (x) { x.stop(); });
     hablando = false; marcarLive(); fijar(err ? "error" : "reposo"); if (texto) msg(err ? "e" : "n", texto);
     if (err) tm.push(setTimeout(function () { if (!live) fijar("reposo"); }, 4000));
