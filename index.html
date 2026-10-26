@@ -5,10 +5,63 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NEXO AI</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0604">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
 </head>
 <body>
   <canvas id="lienzo" aria-hidden="true"></canvas>
+  <div id="velo" aria-hidden="true"></div>
+  <canvas id="viz" aria-hidden="true"></canvas>
   <video id="cam" playsinline muted aria-hidden="true"></video>
+  <video id="med" playsinline preload="auto"></video>
+  <div id="mini">
+    <button type="button" id="bmas" aria-label="Más opciones" title="Más opciones"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+    <button type="button" id="bkb" aria-label="Escribir con el teclado" title="Teclado"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10"/></svg></button>
+  </div>
+  <div id="ui">
+    <div id="acc"></div>
+    <div id="sub" aria-live="polite"><p id="subu"></p><p id="subn"></p></div>
+    <div id="slotU"></div>
+    <div id="orbe-wrap">
+      <canvas id="orb" aria-hidden="true"></canvas>
+      <button type="button" id="orbe" aria-label="Hablar con NEXO" title="Toca para hablar">
+        <svg class="ic-m" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+        <svg class="ic-w" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="hoja">
+    <div class="panel">
+      <button type="button" data-a="teclado">⌨️  Escribir con el teclado</button>
+      <button type="button" data-a="archivo">📎  Enviarle un archivo (foto, PDF, audio, texto)</button>
+      <button type="button" data-a="media">🎵  Música y videos de mi celular</button>
+      <button type="button" data-a="contactos">👤  Elegir mis contactos (llamar y escribir)</button>
+      <button type="button" data-a="tm">⏱️  Mis temporizadores y alarmas</button>
+      <button type="button" data-a="notas">📝  Mis notas y listas</button>
+      <button type="button" data-a="live">⚡  Modo en vivo (Gemini Live, beta)</button>
+      <button type="button" data-a="roku">📺  TV Roku: probar conexión</button>
+    <button type="button" data-a="pc">💻  PC: probar conexión</button>
+      <button type="button" data-a="diag">📊  Diagnóstico y calidad</button>
+      <button type="button" data-a="piramide">🔺  Modo pirámide (holograma 3D)</button>
+      <button type="button" data-a="controles">⚙️  Controles</button>
+      <button type="button" data-a="cerrar">Cerrar</button>
+    </div>
+  </div>
+  <div id="diag" role="dialog" aria-label="Diagnóstico">
+    <pre id="diagt"></pre>
+    <div class="fila">
+      <label>Calidad <select id="calsel"><option value="auto">Automática</option><option value="bajo">Baja</option><option value="medio">Media</option><option value="alto">Alta</option></select></label>
+      <button type="button" id="recal">Recalibrar</button>
+      <button type="button" id="diagc">Copiar reporte</button>
+      <button type="button" id="diagx">Cerrar</button>
+    </div>
+  </div>
+  <input type="file" id="fArch" hidden accept="image/*,application/pdf,audio/*,text/*,.txt,.md,.csv,.json,.log">
+  <input type="file" id="fMedia" hidden accept="audio/*,video/*" multiple>
   <main>
     <header>
       <details id="pruebas">
@@ -16,21 +69,28 @@
         <div id="holoctl">
           <button type="button" id="holo">Modo holograma (H)</button>
           <button type="button" id="inv">Invertir orientación</button>
-          <label>Intensidad <input type="range" id="inten" min="0.6" max="3" step="0.1" value="1.5"></label>
+          <label>Intensidad <input type="range" id="inten" min="0.6" max="4" step="0.1" value="2.4"></label>
           <label>Partículas <input type="range" id="cant" min="2000" max="16000" step="500" value="10000"></label>
           <label>Tamaño de vista <input type="range" id="tam" min="0.15" max="0.34" step="0.01" value="0.3"></label>
           <label>Distancia al centro <input type="range" id="dist" min="0" max="0.12" step="0.005" value="0.04"></label>
+          <label><input type="checkbox" id="limp" checked> Pantalla limpia (sin barra de chat)</label>
           <label><input type="checkbox" id="vozon" checked> Respuesta en voz</label>
+          <label><input type="checkbox" id="liveon"> Modo en vivo (Gemini Live, beta)</label>
+          <label><input type="checkbox" id="liveint"> En vivo: poder interrumpirlo hablando (usa audífonos)</label>
+          <label><input type="checkbox" id="wake"> Llamarlo diciendo «<span id="wpal">nexo</span>»</label>
+          <label>Voz del navegador <select id="vozn"></select></label>
           <label>Voz <select id="voz"><option value="Navegador">Rápida (navegador)</option><option>Kore</option><option>Puck</option><option>Aoede</option><option>Charon</option><option>Fenrir</option><option>Zephyr</option></select></label>
           <button type="button" id="clave">Clave de Gemini</button>
           <button type="button" id="tok">Token del agente</button>
+          <button type="button" id="borrar">Borrar memoria</button>
+          <button type="button" id="inst" style="display:none">Instalar NEXO como app</button>
         </div>
       </details>
     </header>
     <div id="espacio"></div>
     <section id="chat" aria-live="polite"></section>
     <footer>
-      <p id="estado" role="status">Reposo</p>
+      <div id="slotF"><p id="estado" role="status">Reposo</p></div>
       <form id="formulario" autocomplete="off">
         <button type="button" id="bmic" class="ico" aria-label="Hablar con NEXO" title="Hablar">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
